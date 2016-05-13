@@ -1,0 +1,135 @@
+#!/usr/bin/env julia
+
+type DevRequirement
+    url::ASCIIString
+    ref::ASCIIString
+    name::ASCIIString
+end
+
+DevRequirement(url::AbstractString, ref::AbstractString) = DevRequirement(url, ref, extract_pkg_name(url))
+
+get_sha(object) = strip(readall(`git rev-list -1 $(object)`))
+
+function checkout(req::DevRequirement)
+    # Returns true if HEAD was moved, false otherwise
+    cd(Pkg.dir(req.name)) do
+        current_sha = get_sha("HEAD")
+        requested_sha = get_sha(req.ref)
+        if current_sha != requested_sha
+            run(`git remote set-url origin $(req.url)`)
+            run(`git fetch origin`)
+            run(`git checkout $(req.ref)`)
+            return true
+        else
+            return false
+        end
+    end
+end
+
+function clone_or_checkout(req::DevRequirement)
+    new_clone = false
+    if !isdir(Pkg.dir(req.name))
+        Pkg.clone(req.url)
+        new_clone = true
+    end
+    head_moved = checkout(req)
+    if new_clone || head_moved
+        Pkg.build(req.name)
+    end
+end
+
+
+function extract_pkg_name(url::AbstractString)
+    m = match(r"(?:^|[/\\])(\w+?)(?:\.jl)?(?:\.git)?$", url)
+    if m == nothing
+        throw(PkgError("can't determine package name from URL: $url"))
+    else
+        return m.captures[1]
+    end
+end
+
+function parse_dev_requirements(dev_file)
+    reqs = Vector{DevRequirement}()
+    for line in split(open(readall, dev_file), '\n')
+        line = replace(line, r"#.*", "")
+        line = strip(line)
+        m = match(r"([^\s]+)\s+([^\s]+)", line)
+        if m != nothing
+            push!(reqs, DevRequirement(m.captures[1], m.captures[2]))
+        end
+    end
+    reqs
+end
+
+function install(require_file="REQUIRE", require_dev_file="REQUIRE.dev")
+    if !isdir(Pkg.dir())
+        mkpath(Pkg.dir())
+        Pkg.init()
+    end
+    if isfile(require_file)
+        cp(require_file, joinpath(Pkg.dir(), "REQUIRE"); remove_destination=true)
+    else
+        println("No require_file found...skipping")
+    end
+    if isfile(require_dev_file)
+        dev_reqs = parse_dev_requirements(require_dev_file)
+        map(clone_or_checkout, dev_reqs)
+    else
+        println("No require_dev_file found...skipping")
+    end
+    Pkg.resolve()
+end
+
+function print_usage()
+    println("""
+usage: juliet [-h] install [require_file [require_dev_file]]
+
+Arguments:
+  require_file     [default: REQUIRE]     standard requirements file
+  require_dev_file [default: REQUIRE.dev] development requirements file
+
+Options:
+  -h, --help       display this message and exit
+
+This script will attempt to install all registered Julia packages listed in
+require_file (which should obey the standard REQUIRE format) AND will also
+clone and build all unregistered packages in require_dev_file.
+
+Each line of require_dev_file should consist of a single git repository URL and
+a single git ref (a commit SHA, branch name, or tag name). For example:
+
+https://github.com/rdeits/DrakeVisualizer.jl.git 0766c8c93
+https://github.com/JuliaLang/Reactive.jl.git v0.3.3
+
+""")
+end
+
+function main()
+    if any(x -> x == "-h" || x == "--help", ARGS)
+        print_usage()
+        return
+    elseif length(ARGS) > 3 || length(ARGS) == 0
+        print_usage()
+        return
+    else
+        if lowercase(ARGS[1]) == "install"
+            command_args = ARGS[2:end]
+            if length(command_args) > 1
+                require_dev_file = command_args[2]
+            else
+                require_dev_file = "REQUIRE.dev"
+            end
+            if length(command_args) > 0
+                require_file = command_args[1]
+            else
+                require_file = "REQUIRE"
+            end
+            install(require_file, require_dev_file)
+        else
+            print_usage()
+        end
+        return
+    end
+end
+
+main()
