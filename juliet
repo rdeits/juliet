@@ -1,12 +1,21 @@
 #!/usr/bin/env julia
 
-type DevRequirement
+type DevRequirement <: Pkg.Reqs.Line
     url::ASCIIString
     ref::ASCIIString
     name::ASCIIString
 end
 
 DevRequirement(url::AbstractString, ref::AbstractString) = DevRequirement(url, ref, extract_pkg_name(url))
+
+function DevRequirement(line::AbstractString)
+    m = match(r"([^\s]+)\s+([^\s]+)", line)
+    if m == nothing
+        throw(PkgError("This line looks like a dev requirement, but I can't parse it: $(line)"))
+    end
+    DevRequirement(m.captures[1], m.captures[2])
+end
+
 
 get_sha(object) = strip(readall(`git rev-list -1 $(object)`))
 
@@ -49,57 +58,72 @@ function extract_pkg_name(url::AbstractString)
 end
 
 function parse_dev_requirements(dev_file)
-    reqs = Vector{DevRequirement}()
+    reqs = Vector{Pkg.Reqs.Line}()
     for line in split(open(readall, dev_file), '\n')
-        line = replace(line, r"#.*", "")
-        line = strip(line)
-        m = match(r"([^\s]+)\s+([^\s]+)", line)
-        if m != nothing
-            push!(reqs, DevRequirement(m.captures[1], m.captures[2]))
+        cleaned_line = strip(replace(line, r"#.*", ""))
+        if length(cleaned_line) == 0
+            continue
+        end
+        url_match = match(r"^(https://|git@|git://|http://)", cleaned_line)
+        if url_match != nothing
+            push!(reqs, DevRequirement(cleaned_line))
+        else
+            push!(reqs, Pkg.Reqs.Requirement(line))
         end
     end
     reqs
 end
 
-function install(require_file="REQUIRE", require_dev_file="REQUIRE.dev")
+function handle(req::Union{Pkg.Reqs.Requirement, Pkg.Reqs.Comment}, req_file::IO)
+    Pkg.Reqs.write(req_file, Pkg.Reqs.Line[req])
+end
+
+function handle(req::DevRequirement, req_file::IO)
+    clone_or_checkout(req)
+end
+
+function install(require_file="REQUIRE.dev")
     if !isdir(Pkg.dir())
         mkpath(Pkg.dir())
         Pkg.init()
     end
-    if isfile(require_file)
-        cp(require_file, joinpath(Pkg.dir(), "REQUIRE"); remove_destination=true)
-    else
-        println("No require_file found...skipping")
-    end
-    if isfile(require_dev_file)
-        dev_reqs = parse_dev_requirements(require_dev_file)
-        map(clone_or_checkout, dev_reqs)
-    else
-        println("No require_dev_file found...skipping")
+
+    requirements = parse_dev_requirements(require_file)
+    open(joinpath(Pkg.dir(), "REQUIRE"), "w") do f
+        map(req -> handle(req, f), requirements)
     end
     Pkg.resolve()
 end
 
 function print_usage()
     println("""
-usage: juliet [-h] install [require_file [require_dev_file]]
+usage: juliet [-h] install [require_dev_file]
 
 Arguments:
-  require_file     [default: REQUIRE]     standard requirements file
   require_dev_file [default: REQUIRE.dev] development requirements file
 
 Options:
   -h, --help       display this message and exit
 
-This script will attempt to install all registered Julia packages listed in
-require_file (which should obey the standard REQUIRE format) AND will also
-clone and build all unregistered packages in require_dev_file.
 
-Each line of require_dev_file should consist of a single git repository URL and
-a single git ref (a commit SHA, branch name, or tag name). For example:
+`Juliet install` will attempt to install all of the registered and unregistered
+packages listed in your require_dev_file. The require_dev_file expands the
+standard REQUIRE file syntax to allow packages to be specified by their git URL
+and ref (which can be a commit SHA, branch name, or tag name). You can mix and
+match standard REQUIRE entries with these additional entries. For example:
 
+# file: REQUIRE.dev:
+
+IJulia
 https://github.com/rdeits/DrakeVisualizer.jl.git 0766c8c93
 https://github.com/JuliaLang/Reactive.jl.git v0.3.3
+Interact 0.3.1
+
+Running `juliet install` with the above file should result in the listed
+packages and all of their dependencies being installed. By default, they will be
+installed globally, just as if you'd done `Pkg.add` or `Pkg.clone` yourself. To
+install the packages to another location instead, just set the JULIA_PKGDIR
+environment variable before running `juliet install`.
 
 """)
 end
@@ -108,23 +132,18 @@ function main()
     if any(x -> x == "-h" || x == "--help", ARGS)
         print_usage()
         return
-    elseif length(ARGS) > 3 || length(ARGS) == 0
+    elseif length(ARGS) > 2 || length(ARGS) == 0
         print_usage()
         return
     else
         if lowercase(ARGS[1]) == "install"
             command_args = ARGS[2:end]
-            if length(command_args) > 1
-                require_dev_file = command_args[2]
+            if length(command_args) > 0
+                require_dev_file = command_args[1]
             else
                 require_dev_file = "REQUIRE.dev"
             end
-            if length(command_args) > 0
-                require_file = command_args[1]
-            else
-                require_file = "REQUIRE"
-            end
-            install(require_file, require_dev_file)
+            install(require_dev_file)
         else
             print_usage()
         end
