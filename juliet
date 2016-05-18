@@ -22,11 +22,11 @@ get_sha(object) = strip(readall(`git rev-list -1 $(object)`))
 function checkout(req::DevRequirement)
     # Returns true if HEAD was moved, false otherwise
     cd(Pkg.dir(req.name)) do
+        run(`git remote set-url origin $(req.url)`)
+        run(`git fetch origin`)
         current_sha = get_sha("HEAD")
         requested_sha = get_sha(req.ref)
         if current_sha != requested_sha
-            run(`git remote set-url origin $(req.url)`)
-            run(`git fetch origin`)
             run(`git checkout $(req.ref)`)
             return true
         else
