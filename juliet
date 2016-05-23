@@ -16,16 +16,25 @@ function DevRequirement(line::AbstractString)
     DevRequirement(m.captures[1], m.captures[2])
 end
 
-
 get_sha(object) = strip(readall(`git rev-list -1 $(object)`))
 
 function checkout(req::DevRequirement)
     # Returns true if HEAD was moved, false otherwise
     cd(Pkg.dir(req.name)) do
-        run(`git remote set-url origin $(req.url)`)
-        run(`git fetch origin`)
+        juliet_remote_name = replace("juliet_$(req.url)", r"[:%/.@]", "_")
+        existing_remotes = split(readall(`git remote show`))
+        if juliet_remote_name in existing_remotes
+            run(`git remote set-url $(juliet_remote_name) $(req.url)`)
+        else
+            run(`git remote add $(juliet_remote_name) $(req.url)`)
+        end
         current_sha = get_sha("HEAD")
-        requested_sha = get_sha(req.ref)
+        requested_sha = try
+                            get_sha(req.ref)
+                        catch ErrorException
+                            run(`git fetch $(juliet_remote_name)`)
+                            get_sha(req.ref)
+                        end
         if current_sha != requested_sha
             run(`git checkout $(req.ref)`)
             return true
