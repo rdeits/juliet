@@ -92,7 +92,7 @@ function handle(req::DevRequirement, req_file::IO)
 end
 
 function install(require_file="REQUIRE.dev")
-    if !isdir(Pkg.dir())
+    if !isdir(joinpath(Pkg.dir(), "METADATA"))
         mkpath(Pkg.dir())
         Pkg.init()
     end
