@@ -83,23 +83,39 @@ function parse_dev_requirements(dev_file)
     reqs
 end
 
-function handle(req::Union{Pkg.Reqs.Requirement, Pkg.Reqs.Comment}, req_file::IO)
-    Pkg.Reqs.write(req_file, Pkg.Reqs.Line[req])
-end
-
-function handle(req::DevRequirement, req_file::IO)
-    clone_or_checkout(req)
-end
-
 function install(require_file="REQUIRE.dev")
     if !isdir(joinpath(Pkg.dir(), "METADATA"))
         mkpath(Pkg.dir())
         Pkg.init()
     end
 
-    requirements = parse_dev_requirements(require_file)
+    lines = parse_dev_requirements(require_file)
+
+    reqs = open(Pkg.Reqs.parse, joinpath(Pkg.dir(), "REQUIRE"))
+
+    for line in lines
+        if isa(line,Pkg.Reqs.Requirement)
+            if !isempty(line.system)
+                applies = false
+                @windows_only applies |=  ("windows"  in line.system)
+                @unix_only    applies |=  ("unix"     in line.system)
+                @osx_only     applies |=  ("osx"      in line.system)
+                @linux_only   applies |=  ("linux"    in line.system)
+                @windows_only applies &= !("!windows" in line.system)
+                @unix_only    applies &= !("!unix"    in line.system)
+                @osx_only     applies &= !("!osx"     in line.system)
+                @linux_only   applies &= !("!linux"   in line.system)
+                applies || continue
+            end
+            reqs[line.package] = haskey(reqs, line.package) ?
+                intersect(reqs[line.package], line.versions) : line.versions
+        else
+            clone_or_checkout(line)
+        end
+    end
+
     open(joinpath(Pkg.dir(), "REQUIRE"), "w") do f
-        map(req -> handle(req, f), requirements)
+        Pkg.Reqs.write(f, reqs)
     end
     Pkg.resolve()
 end
