@@ -1,9 +1,9 @@
 #!/usr/bin/env julia
 
 type DevRequirement <: Pkg.Reqs.Line
-    url::ASCIIString
-    ref::ASCIIString
-    name::ASCIIString
+    url::String
+    ref::String
+    name::String
 end
 
 DevRequirement(url::AbstractString, ref::AbstractString) = DevRequirement(url, ref, extract_pkg_name(url))
