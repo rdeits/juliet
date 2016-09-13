@@ -1,4 +1,6 @@
 #!/usr/bin/env julia
+import Base.LibGit2
+lg = Base.LibGit2
 
 type DevRequirement <: Pkg.Reqs.Line
     url::String
@@ -16,31 +18,31 @@ function DevRequirement(line::AbstractString)
     DevRequirement(m.captures[1], m.captures[2])
 end
 
-get_sha(object) = strip(readall(`git rev-list -1 $(object)`))
-
 function checkout(req::DevRequirement)
     # Returns true if HEAD was moved, false otherwise
-    cd(Pkg.dir(req.name)) do
-        juliet_remote_name = replace("juliet_$(req.url)", r"[:%/.@]", "_")
-        existing_remotes = split(readall(`git remote show`))
-        if juliet_remote_name in existing_remotes
-            run(`git remote set-url $(juliet_remote_name) $(req.url)`)
-        else
-            run(`git remote add $(juliet_remote_name) $(req.url)`)
-        end
-        current_sha = get_sha("HEAD")
-        requested_sha = try
-                            get_sha(req.ref)
-                        catch ErrorException
-                            run(`git fetch $(juliet_remote_name)`)
-                            get_sha(req.ref)
-                        end
-        if current_sha != requested_sha
-            run(`git checkout $(req.ref)`)
-            return true
-        else
-            return false
-        end
+    repo = lg.GitRepo(Pkg.dir(req.name))
+    juliet_remote_name = replace("juliet_$(req.url)", r"[:%/.@]", "_")
+
+    existing_remotes = lg.remotes(repo)
+    if juliet_remote_name in existing_remotes
+        lg.set_remote_url(repo, req.url, remote=juliet_remote_name)
+    else
+        lg.GitRemote(repo, juliet_remote_name, req.url)
+    end
+    current_sha = lg.head_oid(repo)
+    requested_sha = lg.revparseid(repo, req.ref)
+    if requested_sha == lg.Oid()
+        lg.fetch(repo, juliet_remote_name)
+    end
+    requested_sha = lg.revparseid(repo, req.ref)
+    if requested_sha == lg.Oid()
+        error("Could not find the requested revision. Package: $(path(repo)), remote: $(juliet_remote_name), ref: $(req.ref)")
+    end
+    if current_sha != requested_sha
+        lg.checkout(repo, req.ref)
+        return true
+    else
+        return false
     end
 end
 
@@ -68,7 +70,7 @@ end
 
 function parse_dev_requirements(dev_file)
     reqs = Vector{Pkg.Reqs.Line}()
-    for line in split(open(readall, dev_file), '\n')
+    for line in split(open(readstring, dev_file), '\n')
         cleaned_line = strip(replace(line, r"#.*", ""))
         if length(cleaned_line) == 0
             continue
@@ -94,17 +96,25 @@ function install(require_file="REQUIRE.dev")
     reqs = open(Pkg.Reqs.parse, joinpath(Pkg.dir(), "REQUIRE"))
 
     for line in lines
-        if isa(line,Pkg.Reqs.Requirement)
+        if isa(line, Base.Pkg.Reqs.Requirement)
             if !isempty(line.system)
                 applies = false
-                @windows_only applies |=  ("windows"  in line.system)
-                @unix_only    applies |=  ("unix"     in line.system)
-                @osx_only     applies |=  ("osx"      in line.system)
-                @linux_only   applies |=  ("linux"    in line.system)
-                @windows_only applies &= !("!windows" in line.system)
-                @unix_only    applies &= !("!unix"    in line.system)
-                @osx_only     applies &= !("!osx"     in line.system)
-                @linux_only   applies &= !("!linux"   in line.system)
+                @static if is_windows()
+                    applies |=  ("windows"  in line.system)
+                    applies &= !("!windows" in line.system)
+                end
+                @static if is_unix()
+                    applies |=  ("unix"     in line.system)
+                    applies &= !("!unix"    in line.system)
+                end
+                @static if is_apple()
+                    applies |=  ("osx"      in line.system)
+                    applies &= !("!osx"     in line.system)
+                end
+                @static if is_linux()
+                    applies |=  ("linux"    in line.system)
+                    applies &= !("!linux"   in line.system)
+                end
                 applies || continue
             end
             reqs[line.package] = haskey(reqs, line.package) ?
