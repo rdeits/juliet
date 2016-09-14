@@ -32,29 +32,58 @@ function checkout(req::DevRequirement)
     current_sha = lg.head_oid(repo)
     requested_sha = lg.revparseid(repo, req.ref)
     if requested_sha == lg.Oid()
-        lg.fetch(repo, juliet_remote_name)
+        lg.fetch(repo, remote=juliet_remote_name)
     end
     requested_sha = lg.revparseid(repo, req.ref)
     if requested_sha == lg.Oid()
         error("Could not find the requested revision. Package: $(path(repo)), remote: $(juliet_remote_name), ref: $(req.ref)")
     end
     if current_sha != requested_sha
-        lg.checkout(repo, req.ref)
+        lg.checkout!(repo, req.ref)
+        cd(Pkg.dir()) do
+            if !Base.Pkg.Entry.edit(Pkg.Reqs.add, req.name)
+                isempty(Pkg.Reqs.parse("$(req.name)/REQUIRE")) && return
+                Pkg.resolve()
+            end
+        end
         return true
     else
         return false
     end
 end
 
+function clone(req::DevRequirement)
+    cd(Pkg.dir()) do
+        pkg = req.name
+        info("Cloning $pkg from $(req.url)")
+        ispath(pkg) && throw(PkgError("$(req.name) already exists"))
+        try
+            lg.with(lg.clone(req.url, pkg)) do repo
+                lg.set_remote_url(repo, req.url)
+                lg.checkout!(repo, req.ref)
+            end
+        catch err
+            isdir(pkg) && Base.rm(pkg, recursive=true)
+            rethrow(err)
+        end
+        if !Base.Pkg.Entry.edit(Pkg.Reqs.add, req.name)
+            isempty(Pkg.Reqs.parse("$pkg/REQUIRE")) && return
+            Pkg.resolve()
+        end
+    end
+end
+
+
 function clone_or_checkout(req::DevRequirement)
     new_clone = false
     if !isdir(Pkg.dir(req.name))
-        Pkg.clone(req.url)
-        new_clone = true
-    end
-    head_moved = checkout(req)
-    if new_clone || head_moved
+        clone(req)
         Pkg.build(req.name)
+    else
+        head_moved = checkout(req)
+        if head_moved
+            Pkg.build(req.name)
+        end
     end
 end
 
